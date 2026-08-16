@@ -1,9 +1,8 @@
-const APP_ID = 6287487; // ID официального приложения VK (как у VK Next)
+const APP_ID = 6287487;
 
 async function startAuth() {
     const btn = document.getElementById('authBtn');
     const status = document.getElementById('status');
-    const desc = document.getElementById('desc');
     
     btn.disabled = true;
     btn.innerText = 'Получение токена...';
@@ -11,17 +10,16 @@ async function startAuth() {
     status.className = 'status';
 
     try {
-        // Запрос к login.vk.com за веб-токеном
-        // credentials: 'include' отправляет твои куки сессии VK
+        // 1. Запрашиваем токен у ВКонтакте (это делает сама страница)
         const response = await fetch(`https://login.vk.com/?act=web_token`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: new URLSearchParams({
                 version: '1',
                 app_id: APP_ID,
-                access_token: '' // Пустой, так как мы авторизуемся по кукам
+                access_token: ''
             }),
-            credentials: 'include'
+            credentials: 'include' // Отправляем куки VK
         });
 
         const data = await response.json();
@@ -30,42 +28,55 @@ async function startAuth() {
             const tokenData = Array.isArray(data.data) ? data.data[0] : data.data;
             const token = tokenData.access_token;
             
-            if (!token) throw new Error('Токен не получен');
+            if (!token) throw new Error('Токен не получен от VK');
 
-            // Отправляем токен в расширение
-            chrome.runtime.sendMessage({ type: 'VKE_TOKEN_RECEIVED', token: token, userId: tokenData.user_id }, (response) => {
-                if (chrome.runtime.lastError) {
-                    status.innerText = '❌ Ошибка связи с расширением. Убедитесь, что оно включено и обновлено.';
-                    status.className = 'status error';
-                    btn.disabled = false;
-                    btn.innerText = 'Попробовать снова';
-                } else {
-                    status.innerText = '✅ Успешно! Токен получен. Теперь удалённые сообщения будут сохраняться.';
-                    status.className = 'status success';
-                    desc.innerText = 'Вы можете закрыть эту вкладку.';
-                    btn.style.display = 'none';
-                }
+            // 2. Отправляем токен в расширение через мост (auth_bridge.js)
+            // Мы не используем chrome.runtime здесь, потому что это обычная веб-страница!
+            window.postMessage({
+                type: 'VKE_AUTH_REQUEST',
+                payload: { token: token, userId: tokenData.user_id }
+            }, '*');
+
+            // 3. Ждём ответа от моста
+            const bridgeResponse = await new Promise((resolve) => {
+                const handler = (event) => {
+                    if (event.source !== window) return;
+                    if (event.data && event.data.type === 'VKE_AUTH_RESPONSE') {
+                        window.removeEventListener('message', handler);
+                        resolve(event.data);
+                    }
+                };
+                window.addEventListener('message', handler);
+                
+                // Таймаут на случай, если расширение не отвечает
+                setTimeout(() => {
+                    window.removeEventListener('message', handler);
+                    resolve({ error: 'Timeout: Расширение не ответило' });
+                }, 5000);
             });
+
+            if (bridgeResponse.error) {
+                throw new Error(bridgeResponse.error);
+            }
+
+            status.innerText = '✅ Успешно! Токен передан в расширение.';
+            status.className = 'status success';
+            btn.style.display = 'none';
+            
         } else {
-            throw new Error(data.error_info || 'Неизвестная ошибка VK');
+            throw new Error(data.error_info || 'Ошибка VK при получении токена');
         }
     } catch (e) {
         console.error(e);
-        status.innerText = '❌ Ошибка: ' + e.message + '. Попробуйте сначала зайти на vk.com в этом браузере.';
+        status.innerText = '❌ Ошибка: ' + e.message;
         status.className = 'status error';
         btn.disabled = false;
         btn.innerText = 'Попробовать снова';
     }
 }
 
-// Проверяем, есть ли уже токен при загрузке
+// Проверка при загрузке (опционально)
 window.onload = () => {
-    chrome.storage.local.get(['vke_access_token'], (result) => {
-        if (result.vke_access_token) {
-            document.getElementById('status').innerText = '✅ Вы уже авторизованы. Удалённые сообщения сохраняются.';
-            document.getElementById('status').className = 'status success';
-            document.getElementById('authBtn').style.display = 'none';
-            document.getElementById('desc').innerText = 'Вы можете закрыть эту вкладку.';
-        }
-    });
+    // Здесь можно проверить, есть ли уже токен, но так как мы не имеем доступа к storage расширения напрямую с веб-страницы,
+    // мы можем только спросить об этом через мост. Для простоты пока оставим кнопку всегда видимой.
 };
