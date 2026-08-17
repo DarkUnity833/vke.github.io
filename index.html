@@ -11,8 +11,8 @@
         p { color: #aaa; line-height: 1.6; font-size: 14px; margin-bottom: 24px; }
         button { background: #5181b8; color: white; border: none; padding: 14px 28px; font-size: 16px; font-weight: 500; border-radius: 8px; cursor: pointer; transition: all 0.2s; width: 100%; }
         button:hover { background: #4a76a8; transform: translateY(-1px); }
-        button:disabled { background: #444; cursor: not-allowed; transform: none; }
-        .status { margin-top: 20px; font-size: 14px; min-height: 20px; }
+        button:disabled { background: #444; cursor: not-allowed; transform: none; opacity: 0.7; }
+        .status { margin-top: 20px; font-size: 14px; min-height: 20px; word-break: break-word; }
         .success { color: #4bb34b; }
         .error { color: #e64646; }
         .loader { display: inline-block; width: 20px; height: 20px; border: 2px solid #5181b8; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; vertical-align: middle; margin-right: 8px; }
@@ -22,25 +22,33 @@
 <body>
     <div class="container">
         <h1>VKE Enhanced Auth</h1>
-        <p>Эта страница служит мостом для безопасной передачи токена ВКонтакте в расширение. Пароль не сохраняется.</p>
+        <p>Эта страница служит мостом для безопасной передачи токена ВКонтакте в расширение.</p>
         <button id="authBtn" onclick="startAuth()">Авторизоваться</button>
         <div id="status" class="status"></div>
     </div>
 
     <script>
-        const APP_ID = 6287487; // ID приложения VK Next / VKE
+        const APP_ID = 6287487;
+        const EXTENSION_ID = 'iibcggkfomjepkmpdeeaoljebfbjeacf'; // Замените на реальный ID вашего расширения из chrome://extensions
 
         async function startAuth() {
             const btn = document.getElementById('authBtn');
             const status = document.getElementById('status');
             
             btn.disabled = true;
-            btn.innerHTML = '<span class="loader"></span> Получение токена...';
+            btn.innerHTML = '<span class="loader"></span> Проверка связи...';
             status.innerText = '';
             status.className = 'status';
 
             try {
-                // Запрос токена через официальный эндпоинт VK
+                // 1. Проверяем, установлено ли расширение и активно ли оно
+                const isConnected = await checkExtensionConnection();
+                if (!isConnected) {
+                    throw new Error('Расширение не найдено или не отвечает. Убедитесь, что оно включено.');
+                }
+
+                // 2. Получаем токен от VK
+                btn.innerHTML = '<span class="loader"></span> Получение токена...';
                 const response = await fetch(`https://login.vk.com/?act=web_token`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -56,13 +64,13 @@
                     
                     if (!token) throw new Error('Токен пустой');
 
-                    // Отправляем токен в расширение
+                    // 3. Отправляем токен в расширение
                     window.postMessage({ 
                         type: 'VKE_AUTH_REQUEST', 
                         payload: { token: token, userId: tokenData.user_id } 
                     }, '*');
 
-                    // Ждем подтверждения от расширения
+                    // 4. Ждем подтверждения с увеличенным таймаутом (10 сек)
                     const bridgeResponse = await new Promise((resolve) => {
                         const handler = (event) => {
                             if (event.source !== window) return;
@@ -74,8 +82,8 @@
                         window.addEventListener('message', handler);
                         setTimeout(() => {
                             window.removeEventListener('message', handler);
-                            resolve({ error: 'Timeout: Расширение не ответило за 5 сек' });
-                        }, 5000);
+                            resolve({ error: 'Timeout: Расширение не подтвердило получение токена за 10 сек' });
+                        }, 10000);
                     });
 
                     if (bridgeResponse.error) throw new Error(bridgeResponse.error);
@@ -94,6 +102,38 @@
                 btn.disabled = false;
                 btn.innerText = 'Попробовать снова';
             }
+        }
+
+        // Функция проверки связи с расширением
+        function checkExtensionConnection() {
+            return new Promise((resolve) => {
+                let resolved = false;
+                
+                const handler = (event) => {
+                    if (event.source !== window) return;
+                    if (event.data && event.data.type === 'VKE_PING_RESPONSE') {
+                        if (!resolved) {
+                            resolved = true;
+                            window.removeEventListener('message', handler);
+                            resolve(true);
+                        }
+                    }
+                };
+                
+                window.addEventListener('message', handler);
+                
+                // Отправляем ping
+                window.postMessage({ type: 'VKE_PING' }, '*');
+                
+                // Таймаут на проверку связи (3 сек)
+                setTimeout(() => {
+                    if (!resolved) {
+                        resolved = true;
+                        window.removeEventListener('message', handler);
+                        resolve(false);
+                    }
+                }, 3000);
+            });
         }
     </script>
 </body>
